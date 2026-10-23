@@ -23,6 +23,7 @@ import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import { CODEX_SUBSCRIPTION_PROXY_ENV, codexProjectAuthConflicts, codexSubscriptionProxyConfig, codexSubscriptionProxyUrl } from "./codex-subscription-proxy.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -31,6 +32,7 @@ export function isAiConnectionBusy(error: unknown): error is HttpError {
 
 // Blank values intentionally override inherited credentials in CLI child environments.
 export const AI_AUTH_ENV_KEYS = [
+  CODEX_SUBSCRIPTION_PROXY_ENV,
   "COPILOT_GITHUB_TOKEN",
   "PAPERCLIP_AI_PROVIDER_KEY", "PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_CODEX_PROVIDERS",
   "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI",
@@ -85,6 +87,9 @@ export async function assertManagedAiProjectAuth(
   provider: AiConnectionBinding["provider"],
   target?: AdapterExecutionTarget | null,
 ) {
+  if (provider === "openai" && target?.kind === "remote" && codexSubscriptionProxyUrl()) {
+    throw unprocessable("The trusted Codex subscription proxy is supported only in the local environment", { code: "ai_connection_incompatible" });
+  }
   const extraArgs = [
     ...(Array.isArray(config.extraArgs) ? config.extraArgs : []),
     ...(Array.isArray(config.args) ? config.args : []),
@@ -165,12 +170,13 @@ done`,
   }
   let directory =
     typeof config.cwd === "string" ? path.resolve(config.cwd) : process.cwd();
+  const trustedProxy = provider === "openai" ? codexSubscriptionProxyUrl() : undefined;
   for (;;) {
     for (const relative of files) {
       try {
         const content = await readFile(path.join(directory, relative), "utf8");
         if (
-          /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
+          trustedProxy ? codexProjectAuthConflicts(content, trustedProxy) : /apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider\s*=|env_key\s*=|experimental_bearer_token|cli_auth_credentials_store/.test(
             content,
           )
         ) {
@@ -241,6 +247,7 @@ export async function prepareManagedAiRuntime(
       ? (input.config.env as Record<string, unknown>)
       : {};
   for (const key of [
+    CODEX_SUBSCRIPTION_PROXY_ENV,
     "ANTHROPIC_BASE_URL",
     "OPENAI_BASE_URL",
     "XAI_BASE_URL",
@@ -286,6 +293,9 @@ export async function prepareManagedAiRuntime(
     const credentialRef = selection.grant.credentialSecretRefs.find((ref) => ref.configPath === "ai.credential");
     const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
     const noAuth = routing?.auth === "none";
+    const subscriptionProxy = !routing && input.binding.provider === "openai" &&
+      selection.attribution.method === "subscription" && harness === "codex_local"
+      ? codexSubscriptionProxyUrl() : undefined;
     if (!noAuth && !credentialRef) throw unprocessable("The selected AI credential is unavailable");
     const readFreshness = async () => {
       if (!credentialRef) return undefined;
@@ -334,7 +344,7 @@ export async function prepareManagedAiRuntime(
     if (harness === "codex_local")
       await writeFile(
         path.join(providerHome, "config.toml"),
-        'cli_auth_credentials_store = "file"\n',
+        'cli_auth_credentials_store = "file"\n' + (subscriptionProxy ? codexSubscriptionProxyConfig(subscriptionProxy) : ""),
         { mode: 0o600 },
       );
     if (!routing && subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
@@ -394,7 +404,7 @@ export async function prepareManagedAiRuntime(
       .digest("hex")
       .slice(0, 16);
     const identity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${generation}`;
-    const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${noAuth ? "no-auth" : `${credentialRef!.secretId}:${freshness!.epoch}`}`;
+    const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${noAuth ? "no-auth" : `${credentialRef!.secretId}:${freshness!.epoch}`}${subscriptionProxy ? `:proxy:${createHash("sha256").update(subscriptionProxy).digest("hex")}` : ""}`;
     return {
       sessionIdentity,
       ...(subscriptionFile && input.binding.provider === "openai" && credentialRef && freshness ? {
@@ -405,6 +415,7 @@ export async function prepareManagedAiRuntime(
         ...input.config,
         ...projected?.config,
         ...(routing ? { managedAiRouting: routing } : {}),
+        ...(subscriptionProxy ? { managedCodexSubscriptionProxy: subscriptionProxy } : {}),
         env,
         managedAiConnection: { ...attribution, identity, sessionIdentity },
       },

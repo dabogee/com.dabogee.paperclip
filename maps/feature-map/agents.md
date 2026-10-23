@@ -31,6 +31,13 @@ Agent access: [companion](../agent-access-map/agents.md).
 
 Use New agent from the roster or `/agents/new`.
 
+In this fork, enabling the trusted Headroom proxy lets Codex creation/hire APIs
+reuse one connected OpenAI subscription automatically. Explicit/inherited choices
+win; otherwise the personal default or sole visible shared subscription is used.
+See [setup and API example](../../doc/HEADROOM-FORK.md#create-an-agent-without-passing-provider-credentials).
+Missing/ambiguous accounts and authorization failures remain errors, never an
+ambient-login fallback. Existing agents keep their configuration.
+
 Submitting the name creates an inactive record before adapter selection or account setup.
 A name-only draft returns to adapter selection when reopened.
 Save & exit keeps its configuration; Finish setup on the agent returns to the

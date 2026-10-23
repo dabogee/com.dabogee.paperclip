@@ -32,7 +32,8 @@ import {
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
-import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
+import { defaultAiConnectionForHire, defaultAiConnectionForHeadroom, hasCodexAuthOverride } from "../services/agent-ai-connection-default.js";
+import { codexSubscriptionProxyUrl } from "../services/codex-subscription-proxy.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
@@ -2162,6 +2163,11 @@ export function agentRoutes(
     if (!normalized.aiConnection && adapterType === "paperclip_runner"
       && adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "copilot") {
       normalized.aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" };
+    }
+    if (!normalized.aiConnection && agentHarnessType(adapterType, adapterConfig) === "codex_local" && !hasCodexAuthOverride(adapterConfig) && codexSubscriptionProxyUrl()) {
+      const userId = responsibleUserForAiRequest(req);
+      if (!userId) throw unprocessable("A responsible user is required to automatically select an OpenAI subscription", { code: "ai_connection_responsible_user_missing" });
+      normalized.aiConnection = defaultAiConnectionForHeadroom(adapterConfig, await aiConnectionService(db).list(companyId, userId));
     }
     return normalized;
   }

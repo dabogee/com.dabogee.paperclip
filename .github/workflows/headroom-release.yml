@@ -1,0 +1,86 @@
+name: Headroom fork release
+
+on:
+  push:
+    tags: ["headroom-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing headroom-vVERSION tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: headroom-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      PAPERCLIP_RELEASE_REUSE_UI_DIST: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test proxy configuration and build the complete runtime
+        run: |
+          pnpm --filter @paperclipai/server exec vitest run src/services/codex-subscription-proxy.test.ts src/services/agent-ai-connection-default.test.ts
+          node --test scripts/build-fork-release.test.mjs
+          pnpm build
+          pnpm --filter @paperclipai/server exec vitest run src/__tests__/ai-connections.test.ts
+          pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-hire-ai-connections.test.ts
+          pnpm --filter @paperclipai/paperclip-runner exec vitest run src/drivers/runtime-context-materializer.test.ts
+      - name: Prepare shipped UI and runtime skills
+        run: |
+          bash scripts/prepare-server-ui-dist.sh
+          for package in server packages/adapters/claude-local packages/adapters/codex-local; do
+            cp -R skills "$package/skills"
+          done
+      - name: Package patched CLI, server and dependencies
+        run: node scripts/build-fork-release.mjs "$RELEASE_TAG" "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: headroom-${{ matrix.os }}
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: headroom-*
+          merge-multiple: true
+          path: release
+      - name: Attach packages to GitHub Release (never npm publish)
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "Paperclip $RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" release/* --clobber

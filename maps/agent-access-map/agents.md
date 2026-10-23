@@ -44,6 +44,15 @@ bypass hiring authorization. Source: [runner resolver](../../server/src/services
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
 
+The fork's server-enabled Headroom default selects only the responsible user's
+personal subscription default or a single audience-visible shared subscription
+when no managed binding or explicit provider credentials exist. The existing
+selection/install checks still run before persistence: agent callers cannot
+install restricted shared credentials on children. No host credential import or
+token-returning endpoint is added. Source: [default selection](../../server/src/services/agent-ai-connection-default.ts);
+API fixtures: [hiring tests](../../server/src/__tests__/agent-hire-ai-connections.test.ts).
+Fixtures are not live subscription/Headroom qualification.
+
 The early wizard record (`setupId` on create) and completion of that record
 (`setupAgentId` on hire) require a board actor and company-scoped creation
 permission. Its creator can finish their own inactive setup with that permission;

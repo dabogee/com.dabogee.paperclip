@@ -19,6 +19,15 @@ Storybook's simulated controllers and page annotations do not run in the app.
 
 ## Compatibility and selection
 
+This fork can route local managed Codex subscriptions through an explicitly
+operator-trusted proxy without changing the selected account or disabling parent
+configuration checks. See [Headroom fork setup and releases](../HEADROOM-FORK.md).
+The feature is disabled unless the server sets `PAPERCLIP_CODEX_SUBSCRIPTION_PROXY_URL`.
+With that setting, new Codex agents without explicit credentials or a managed
+binding automatically select their personal subscription default, then the sole
+visible connected shared subscription. Ambiguous/missing accounts require action;
+normal account and installation authorization remains authoritative.
+
 The shared `AI_CONNECTION_CAPABILITIES` contract defines these combinations:
 
 | Provider | Sign-in method | Existing harness |

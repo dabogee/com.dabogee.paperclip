@@ -197,6 +197,33 @@ command = "untrusted-command"
     await expect(stat(join(target, "auth.json"))).rejects.toThrow();
   });
 
+  it("retains the server-approved subscription proxy and selected login in the actual native home", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-subscription-proxy-"));
+    roots.push(root);
+    const source = join(root, "source");
+    const target = join(root, "isolated");
+    await mkdir(source);
+    const auth = JSON.stringify({ tokens: { access_token: "selected-subscription" } });
+    await writeFile(join(source, "auth.json"), auth);
+    await writeFile(join(source, "config.toml"), `model_provider = "paperclip_subscription_proxy"
+[model_providers.paperclip_subscription_proxy]
+base_url = "http://127.0.0.1:8787/v1"
+wire_api = "responses"
+requires_openai_auth = true
+[mcp_servers.unassigned]
+command = "untrusted-command"
+`);
+    await prepareIsolatedCodexHome({ context: null, codexHome: target, sourceCodexHome: source, apiKey: "unrelated-key" });
+    const config = await readFile(join(target, "config.toml"), "utf8");
+    expect(config).toContain('model_provider = "paperclip_subscription_proxy"');
+    expect(config).toContain('base_url = "http://127.0.0.1:8787/v1"');
+    expect(config).toContain("requires_openai_auth = true");
+    expect(config).toContain('cli_auth_credentials_store = "file"');
+    expect(config).not.toMatch(/env_key|unassigned|untrusted/);
+    expect(await readFile(join(target, "auth.json"), "utf8")).toBe(auth);
+    expect((await stat(join(target, "auth.json"))).mode & 0o777).toBe(0o600);
+  });
+
   it("rejects repeated assignments without changing the current assignment", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-repeat-"));
     roots.push(root);

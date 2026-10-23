@@ -91,6 +91,15 @@ own policy and access review.
 Gaps: Settings APIs cover parts of configuration; pre-start database/binding/storage
 configuration is local operator tooling.
 
+The fork's trusted Codex subscription proxy is likewise pre-start, operator-only
+configuration: `PAPERCLIP_CODEX_SUBSCRIPTION_PROXY_URL` has no HTTP write endpoint
+or agent delegation. Managed agent environment values cannot authorize a proxy;
+normal company/grant/account checks remain in force. Only an exact approved
+provider route is exempted from the local ancestor-config conflict check.
+Source: [proxy policy](../../server/src/services/codex-subscription-proxy.ts)
+and [runtime](../../server/src/services/ai-connection-runtime.ts).
+Fixtures do not establish a live subscription round trip through Headroom.
+
 Cloud stack Admins may update experimental settings through the trusted Cloud
 actor without receiving other instance-admin powers. This uses the current
 stack role on each request; company membership alone does not grant it.

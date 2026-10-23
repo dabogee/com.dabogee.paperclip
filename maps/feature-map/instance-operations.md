@@ -27,6 +27,11 @@ Agent access: [companion](../agent-access-map/instance-operations.md).
 
 Use `paperclipai install`, `run`, `service`, `doctor`, `configure`, `channels`, or `update --help` for the intended operation.
 
+This fork also offers platform-specific GitHub Release archives and the
+server-only `PAPERCLIP_CODEX_SUBSCRIPTION_PROXY_URL` setting. Follow
+[Headroom setup](../../doc/HEADROOM-FORK.md) for installation and local Codex
+subscription routing; these archives do not use the npm update channel.
+
 ### `settings-backup`
 
 Use currently visible instance settings for experiments/access and `paperclipai db:backup --help` for one-off backup. Some legacy general-settings URLs redirect.
@@ -44,6 +49,14 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 Automated: [doctor](../../cli/src/__tests__/doctor.test.ts), [update command](../../cli/src/__tests__/update-command.test.ts), and [service manager](../../cli/src/__tests__/service-manager.test.ts) cover command contracts.
 
 Manual: Inspect the selected installation/channel and configuration, start the isolated instance, confirm health and browser access, then stop that instance. For update changes, use the dry-run/check path first and verify installed version and rollback state on an owned disposable installation.
+
+For the fork, verify the archive checksum and install into a disposable prefix.
+Set the trusted Headroom URL only on the server, select a managed subscription,
+and test local legacy/native Codex. A matching ancestor provider should pass;
+a different URL or credential override must fail. Pure configuration and native
+home fixtures are in [proxy tests](../../server/src/services/codex-subscription-proxy.test.ts)
+and [Runner tests](../../packages/paperclip-runner/src/drivers/runtime-context-materializer.test.ts).
+Live Headroom/subscription qualification remains a separate manual check.
 
 Routine HTTP monitoring may use `GET /api/liveness` (or `HEAD`). It returns only
 process startup status and the public build commit without SQL or authentication.

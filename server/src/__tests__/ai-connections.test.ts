@@ -74,6 +74,51 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("routes the selected shared Codex subscription through an operator-trusted proxy in both runners", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Proxy fixture", issuePrefix: "PRX" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Proxy fixture", adapterType: "codex_local" });
+    await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
+    const key = "PAPERCLIP_CODEX_SUBSCRIPTION_PROXY_URL";
+    const previous = process.env[key];
+    const proxy = "http://127.0.0.1:8787/v1";
+    const credential = JSON.stringify({ tokens: { account_id: "proxy-shared", id_token: "identity", access_token: "selected-access", refresh_token: "selected-refresh" } });
+    const account = await service.save(companyId, "alice", { provider: "openai", method: "subscription", ownership: "shared", name: "Proxy subscription", loginSessionId: "fixture", agentIds: [], allAgents: true }, credential);
+    const binding = { provider: "openai", method: "subscription", mode: "shared", ...account } as const;
+    const cwd = path.join(home, "proxy-project");
+    await fs.mkdir(path.join(cwd, ".codex"), { recursive: true });
+    const file = path.join(cwd, ".codex/config.toml");
+    await writeFile(file, `model_provider = "headroom"\n[model_providers.headroom]\nbase_url = "${proxy}"\nrequires_openai_auth = true\n`);
+    try {
+      vi.stubEnv(key, "");
+      await expect(assertManagedAiProjectAuth({ cwd }, "openai")).rejects.toThrow("conflict");
+      vi.stubEnv(key, proxy);
+      await expect(assertManagedAiProjectAuth({ cwd, args: ["-c", "model_provider=other"] }, "openai")).rejects.toThrow("overrides");
+      for (const adapterType of ["codex_local", "paperclip_runner"]) {
+        const config = { cwd, ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
+        const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: "alice", adapterType, binding, config });
+        try {
+          const providerHome = String(runtime.config.env.CODEX_HOME);
+          expect(await readFile(path.join(providerHome, "auth.json"), "utf8")).toBe(credential);
+          expect(await readFile(path.join(providerHome, "config.toml"), "utf8")).toContain(`base_url = "${proxy}"`);
+          expect(runtime.config.env.OPENAI_API_KEY).toBe("");
+          expect(runtime.config.env[key]).toBe("");
+          expect(runtime.sessionIdentity).toContain(":proxy:");
+          expect((await stat(path.join(providerHome, "config.toml"))).mode & 0o777).toBe(0o600);
+          await expect(prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: "alice", adapterType, binding, config: { ...config, env: { [key]: proxy } } })).rejects.toThrow("incompatible");
+        } finally { await runtime.cleanup(); }
+        await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      await writeFile(file, `model_provider = "other"\n`);
+      await expect(assertManagedAiProjectAuth({ cwd }, "openai")).rejects.toThrow("conflict");
+    } finally {
+      if (previous === undefined) delete process.env[key]; else process.env[key] = previous;
+      await rm(cwd, { recursive: true, force: true });
+      await db.delete(toolConnections).where(eq(toolConnections.id, account.connectionId));
+    }
+  });
+
   it.each([
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: false },
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: true },

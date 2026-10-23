@@ -2,14 +2,14 @@ import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls, aiProviderDefaults } from "@paperclipai/db";
 import { type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -576,5 +576,128 @@ describe("hired agents sharing a subscription", () => {
   });
 });
 
+
+describe("Headroom automatic agent setup", () => {
+  const key = "PAPERCLIP_CODEX_SUBSCRIPTION_PROXY_URL";
+  async function withProxy(callback: () => Promise<void>) {
+    const previous = process.env[key];
+    vi.stubEnv(key, "http://127.0.0.1:8787/v1");
+    try { await callback(); }
+    finally { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; }
+  }
+
+  function boardApp(f: Awaited<ReturnType<typeof fixture>>) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: f.userId, companyIds: [f.companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use(errorHandler);
+    return app;
+  }
+
+  async function sharedSubscription(f: Awaited<ReturnType<typeof fixture>>, allAgents = true) {
+    return aiConnectionService(db).save(f.companyId, f.userId, {
+      provider: "openai", method: "subscription", ownership: "shared", name: "Headroom shared", loginSessionId: "fixture", allAgents, agentIds: allAgents ? [] : [f.agentId],
+    }, JSON.stringify({ tokens: { access_token: "shared-fixture", refresh_token: "shared-refresh", id_token: "shared-id", account_id: "shared-account" } }));
+  }
+
+  it.each([
+    ["agents", "legacy"], ["agents", "paperclip"], ["agent-hires", "legacy"], ["agent-hires", "paperclip"],
+  ] as const)("%s automatically binds the personal subscription for %s Codex", async (endpoint, runner) => withProxy(async () => {
+    const f = await fixture("openai", "subscription");
+    const response = await request(boardApp(f)).post(`/api/companies/${f.companyId}/${endpoint}`).send({ name: "Seamless Codex", role: "engineer", adapterType: "codex_local", runner });
+    const agent = hired(response);
+    expect(agent.runtimeConfig.aiConnection).toEqual(f.binding);
+    expect(JSON.stringify(response.body)).not.toContain("fixture-access");
+    const [saved] = await db.select().from(agents).where(eq(agents.id, agent.id));
+    expect(saved.runtimeConfig.aiConnection).toEqual(f.binding);
+    expect(await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.connectionId, f.account.connectionId), eq(toolConnectionInstalls.targetId, agent.id)))).toHaveLength(1);
+  }));
+
+  it("automatically binds the sole shared subscription without a personal default", async () => withProxy(async () => {
+    const f = await fixture("openai", "subscription");
+    await db.delete(aiProviderDefaults).where(eq(aiProviderDefaults.companyId, f.companyId));
+    const account = await sharedSubscription(f);
+    const agent = hired(await request(boardApp(f)).post(`/api/companies/${f.companyId}/agents`).send({ name: "Shared Codex", role: "engineer", adapterType: "codex_local", runner: "legacy" }));
+    expect(agent.runtimeConfig.aiConnection).toEqual({ provider: "openai", method: "subscription", mode: "shared", ...account });
+    const refresh = vi.spyOn(await import("../services/subscription-refresh.js"), "refreshSubscriptionConnection").mockResolvedValue(undefined);
+    let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    try {
+      runtime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: agent.id, responsibleUserId: f.userId, adapterType: agent.adapterType, binding: agent.runtimeConfig.aiConnection, config: { ...agent.adapterConfig, cwd: home } });
+      const providerHome = String(runtime.config.env.CODEX_HOME);
+      expect(await readFile(path.join(providerHome, "config.toml"), "utf8")).toContain('base_url = "http://127.0.0.1:8787/v1"');
+      expect(JSON.parse(await readFile(path.join(providerHome, "auth.json"), "utf8")).tokens.access_token).toBe("shared-fixture");
+      expect(runtime.config.env.OPENAI_API_KEY).toBe("");
+      expect(runtime.attribution.connectionId).toBe(account.connectionId);
+    } finally { await runtime?.cleanup(); refresh.mockRestore(); }
+  }));
+
+  it("retains an explicitly selected account despite automatic selection", async () => withProxy(async () => {
+    const f = await fixture("openai", "subscription");
+    const account = await sharedSubscription(f);
+    const binding = { provider: "openai", method: "subscription", mode: "shared", ...account };
+    const agent = hired(await request(boardApp(f)).post(`/api/companies/${f.companyId}/agents`).send({ name: "Explicit account", role: "engineer", adapterType: "codex_local", runner: "legacy", runtimeConfig: { aiConnection: binding } }));
+    expect(agent.runtimeConfig.aiConnection).toEqual(binding);
+  }));
+
+  it("automatically connects a saved setup record when hiring is completed", async () => withProxy(async () => {
+    const f = await fixture("openai", "subscription");
+    const setupId = randomUUID();
+    const app = boardApp(f);
+    const initial = await request(app).post(`/api/companies/${f.companyId}/agents`).send({ setupId, name: "Setup Codex", adapterType: "codex_local", runner: "legacy" });
+    expect(initial.status, JSON.stringify(initial.body)).toBe(201);
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, setupId))).toHaveLength(0);
+    const agent = hired(await request(app).post(`/api/companies/${f.companyId}/agent-hires`).send({ setupAgentId: setupId, name: "Setup Codex", adapterType: "codex_local", runner: "legacy" }));
+    expect(agent.id).toBe(setupId);
+    expect(agent.runtimeConfig.aiConnection).toEqual(f.binding);
+    expect(await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.connectionId, f.account.connectionId), eq(toolConnectionInstalls.targetId, setupId)))).toHaveLength(1);
+  }));
+
+  it("preserves an explicit provider credential instead of switching to a saved subscription", async () => withProxy(async () => {
+    const f = await fixture("openai", "subscription");
+    const agent = hired(await request(boardApp(f)).post(`/api/companies/${f.companyId}/agents`).send({ name: "Explicit API key", role: "engineer", adapterType: "codex_local", runner: "legacy", adapterConfig: { env: { OPENAI_API_KEY: "fixture-explicit-key" } } }));
+    expect(agent.runtimeConfig.aiConnection).toBeUndefined();
+  }));
+
+  it("rejects ambiguous shared subscriptions before creating an agent", async () => withProxy(async () => {
+    const f = await fixture("openai", "subscription");
+    await db.delete(aiProviderDefaults).where(eq(aiProviderDefaults.companyId, f.companyId));
+    await sharedSubscription(f); await sharedSubscription(f);
+    const response = await request(boardApp(f)).post(`/api/companies/${f.companyId}/agents`).send({ name: "Ambiguous Codex", role: "engineer", adapterType: "codex_local", runner: "legacy" });
+    expect(response.status).toBe(422);
+    expect(response.body.details?.code).toBe("ai_connection_selection_required");
+    expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
+  }));
+
+  it("does not discover a shared subscription outside the user's audience", async () => withProxy(async () => {
+    const f = await fixture("openai", "subscription");
+    await db.delete(aiProviderDefaults).where(eq(aiProviderDefaults.companyId, f.companyId));
+    const account = await sharedSubscription(f);
+    const otherUser = `other-${f.companyId}`;
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: otherUser, membershipRole: "member", status: "active" });
+    await toolAccessService(db).replaceConnectionGrantMembers(account.connectionId, account.grantId, [otherUser], { userId: f.userId });
+    const response = await request(boardApp(f)).post(`/api/companies/${f.companyId}/agents`).send({ name: "Hidden subscription", role: "engineer", adapterType: "codex_local", runner: "legacy" });
+    expect(response.status).toBe(422);
+    expect(response.body.details?.code).toBe("ai_connection_default_missing");
+    expect(JSON.stringify(response.body)).not.toContain(account.connectionId);
+  }));
+
+  it("does not let an agent install a restricted shared subscription on its child", async () => withProxy(async () => {
+    const f = await fixture("openai", "subscription");
+    await db.delete(aiProviderDefaults).where(eq(aiProviderDefaults.companyId, f.companyId));
+    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, f.agentId));
+    await sharedSubscription(f, false);
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Unauthorized child", role: "engineer", adapterType: "codex_local", runner: "legacy" });
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
+  }));
+
+  it("preserves upstream behavior when the proxy is disabled", async () => withProxy(async () => {
+    vi.stubEnv(key, "");
+    const f = await fixture("openai", "subscription");
+    const agent = hired(await request(boardApp(f)).post(`/api/companies/${f.companyId}/agents`).send({ name: "Unmanaged Codex", role: "engineer", adapterType: "codex_local", runner: "legacy" }));
+    expect(agent.runtimeConfig.aiConnection).toBeUndefined();
+  }));
+});
 
 enableRunFailureReporting();

@@ -310,18 +310,20 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
 }
 
 /** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
-async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
-  if (!sourceHome?.trim()) return "";
+async function managedCodexProviderConfig(sourceHome?: string | null): Promise<{ toml: string; usesSubscription: boolean } | null> {
+  if (!sourceHome?.trim()) return null;
   const source = await readSourceCodexAuth(join(sourceHome, "config.toml"));
-  if (!source) return "";
+  if (!source) return null;
   let parsed;
-  try { parsed = parseToml(source.toString("utf8")); } catch { return ""; }
-  if (parsed.model_provider !== "paperclip") return "";
+  try { parsed = parseToml(source.toString("utf8")); } catch { return null; }
+  const usesSubscription = parsed.model_provider === "paperclip_subscription_proxy";
+  if (parsed.model_provider !== "paperclip" && !usesSubscription) return null;
+  const providerName = usesSubscription ? "paperclip_subscription_proxy" : "paperclip";
   const providers = parsed.model_providers as Record<string, unknown> | undefined;
-  const provider = providers?.paperclip as Record<string, unknown> | undefined;
+  const provider = providers?.[providerName] as Record<string, unknown> | undefined;
   if (!provider || typeof provider.base_url !== "string" || provider.wire_api !== "responses"
-    || provider.requires_openai_auth !== false
-    || (provider.env_key !== undefined && provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY")) {
+    || provider.requires_openai_auth !== usesSubscription
+    || (provider.env_key !== undefined && (usesSubscription || provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY"))) {
     throw new Error("Invalid managed Codex provider configuration");
   }
   const url = new URL(provider.base_url);
@@ -329,7 +331,7 @@ async function managedCodexProviderConfig(sourceHome?: string | null): Promise<s
     || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
     throw new Error("Invalid managed Codex provider URL");
   }
-  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}${isOpenRouterUrl(provider.base_url) ? openRouterCodexHeaders() : ""}`;
+  return { usesSubscription, toml: `model_provider = "${providerName}"\n[model_providers.${providerName}]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = ${usesSubscription}\n${usesSubscription ? "supports_websockets = false\n" : ""}${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}${!usesSubscription && isOpenRouterUrl(provider.base_url) ? openRouterCodexHeaders() : ""}` };
 }
 
 export async function prepareIsolatedCodexHome(input: {
@@ -352,7 +354,8 @@ export async function prepareIsolatedCodexHome(input: {
   const temporaryConfig = join(input.codexHome, `.config-${randomUUID()}.tmp`);
   try {
     await writeFile(temporaryConfig, [
-      providerConfig,
+      ...(providerConfig?.usesSubscription ? ['cli_auth_credentials_store = "file"'] : []),
+      providerConfig?.toml ?? "",
       codexObservabilityToml(input.observability?.otelConfig),
       // Codex shell snapshots serialize the provider process environment. The
       // native runner injects short-lived provider and MCP bindings, so a
@@ -379,9 +382,9 @@ export async function prepareIsolatedCodexHome(input: {
 
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
-  if (providerConfig) return;
+  if (providerConfig && !providerConfig.usesSubscription) return;
   const apiKey = input.apiKey?.trim();
-  if (apiKey) {
+  if (apiKey && !providerConfig?.usesSubscription) {
     // The pinned Codex app-server authenticates API-key automation through its
     // login cache rather than the CLI-only CODEX_API_KEY path. Keep this file
     // owner-only in the disposable session home.

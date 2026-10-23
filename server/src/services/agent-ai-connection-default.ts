@@ -5,7 +5,43 @@ import {
   type AiConnectionBinding,
   type AiRuntimeConnectionBinding,
   type AiProvider,
+  type AiManagedConnectionSummary,
 } from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
+
+export function hasCodexAuthOverride(config: Record<string, unknown>): boolean {
+  const env = config.env && typeof config.env === "object" ? config.env as Record<string, unknown> : {};
+  const hasValue = (value: unknown) => {
+    if (value && typeof value === "object" && (value as Record<string, unknown>).type === "plain") value = (value as Record<string, unknown>).value;
+    return value !== undefined && value !== null && value !== "";
+  };
+  if ([...PROVIDER_AUTH_ENV_KEYS.openai, "PAPERCLIP_CODEX_PROVIDERS", "PAPERCLIP_AI_PROVIDER_URL"].some(key => hasValue(env[key]))) return true;
+  const args = [...(Array.isArray(config.args) ? config.args : []), ...(Array.isArray(config.extraArgs) ? config.extraArgs : [])];
+  return args.some(arg => typeof arg === "string" && /^(--config|-c|--api-key|--auth-token)(=|$)/.test(arg));
+}
+
+/** Candidates are already restricted to the responsible user's company/audience. */
+export function defaultAiConnectionForHeadroom(
+  config: Record<string, unknown>,
+  connections: AiManagedConnectionSummary[],
+): AiConnectionBinding | undefined {
+  if (hasCodexAuthOverride(config)) return undefined;
+  const accounts = connections.filter(account => account.provider === "openai");
+  const personal = accounts.find(account => account.ownership === "personal" && account.isDefault);
+  if (personal) {
+    if (personal.method !== "subscription" || personal.status !== "connected" || personal.routing) {
+      throw unprocessable("Connect a healthy OpenAI subscription as your personal default, or explicitly choose another AI connection", { code: "ai_connection_incompatible" });
+    }
+    return { provider: "openai", method: "subscription", mode: "responsible_user" };
+  }
+  const shared = accounts.filter(account => account.ownership === "shared" && account.method === "subscription" && account.status === "connected" && !account.routing);
+  if (shared.length !== 1) {
+    throw unprocessable(shared.length
+      ? "Several shared OpenAI subscriptions are available. Explicitly select an AI connection for this agent."
+      : "Connect an OpenAI subscription before creating this Codex agent.", { code: shared.length ? "ai_connection_selection_required" : "ai_connection_default_missing" });
+  }
+  return { provider: "openai", method: "subscription", mode: "shared", connectionId: shared[0]!.id, grantId: shared[0]!.grantId };
+}
 
 // Only keys read by the child's provider express a child auth override.
 // A config copied from another provider can retain unrelated keys.
