@@ -47,6 +47,12 @@ async function main() {
   const [tag, outputDirectory] = process.argv.slice(2);
   assert.match(tag ?? "", /^headroom-v[0-9][0-9A-Za-z.-]*$/, "Use a headroom-vVERSION release tag");
   assert.ok(outputDirectory, "Usage: build-fork-release.mjs headroom-vVERSION OUTPUT_DIRECTORY");
+  // Upstream owns validation; this command builds and packages the fork only.
+  await run("pnpm", ["build"]);
+  await run("env", ["PAPERCLIP_RELEASE_REUSE_UI_DIST=1", "bash", "scripts/prepare-server-ui-dist.sh"]);
+  for (const directory of ["server", "packages/adapters/claude-local", "packages/adapters/codex-local"]) {
+    await cp(join(repo, "skills"), join(repo, directory, "skills"), { recursive: true });
+  }
   const output = resolve(outputDirectory);
   await mkdir(output, { recursive: true });
   const temporary = await mkdtemp(join(tmpdir(), "paperclip-fork-release-"));

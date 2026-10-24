@@ -121,6 +121,27 @@ execution host, not a remote controller. Use the local environment for this setu
 
 ## Build a release
 
+### Local build
+
+Use Node.js 24.11 or newer and pnpm 9.15.4. From the repository root:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build:fork headroom-v0.1.0 /tmp/paperclip-release
+```
+
+The build command compiles the workspace once, copies the built UI and runtime
+skills, and creates the archive and checksum in the output directory. No Git tag
+or push is needed for a local build. It does not run test suites or a separate
+typecheck: upstream validation is assumed. Package integrity checks remain to
+catch missing fork code, UI, dependencies or links outside the archive.
+
+Archives target the current operating system and CPU. Remote daemon and
+provider-pack matrices from upstream's public release pipeline are not included;
+this distribution targets local agents.
+
+### GitHub Release
+
 Commit and push the fork changes, then create and push a tag such as
 `headroom-v0.1.0`. **Headroom fork release** builds Linux x64 and macOS ARM64/x64
 packages and attaches them with checksums to a GitHub Release after all builds
@@ -129,10 +150,5 @@ pass. It never publishes to npm and needs no npm token. GitHub's normal
 the workflow with an existing `headroom-vVERSION` tag. No release is created by
 editing these files locally.
 
-The portable packager uses pnpm 9.15.4 `deploy`; run `pnpm build`,
-`bash scripts/prepare-server-ui-dist.sh`, and copy `skills/` into `server/skills`
-and the Claude/Codex adapter packages before invoking
-`node scripts/build-fork-release.mjs headroom-v0.1.0 /tmp/paperclip-release`.
-Archives are platform-specific, not cross-platform npm tarballs. Remote daemon
-and provider-pack matrices from upstream's public release pipeline are not
-included; this distribution targets local agents.
+The workflow uses the same `pnpm build:fork` command as a local build and assumes
+upstream validation rather than running test suites or a separate typecheck.

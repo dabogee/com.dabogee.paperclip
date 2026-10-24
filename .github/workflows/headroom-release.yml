@@ -27,7 +27,6 @@ jobs:
     timeout-minutes: 90
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-      PAPERCLIP_RELEASE_REUSE_UI_DIST: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -41,22 +40,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Test proxy configuration and build the complete runtime
-        run: |
-          pnpm --filter @paperclipai/server exec vitest run src/services/codex-subscription-proxy.test.ts src/services/agent-ai-connection-default.test.ts
-          node --test scripts/build-fork-release.test.mjs
-          pnpm build
-          pnpm --filter @paperclipai/server exec vitest run src/__tests__/ai-connections.test.ts
-          pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-hire-ai-connections.test.ts
-          pnpm --filter @paperclipai/paperclip-runner exec vitest run src/drivers/runtime-context-materializer.test.ts
-      - name: Prepare shipped UI and runtime skills
-        run: |
-          bash scripts/prepare-server-ui-dist.sh
-          for package in server packages/adapters/claude-local packages/adapters/codex-local; do
-            cp -R skills "$package/skills"
-          done
-      - name: Package patched CLI, server and dependencies
-        run: node scripts/build-fork-release.mjs "$RELEASE_TAG" "$RUNNER_TEMP/release"
+      - name: Build and package the fork
+        run: pnpm build:fork "$RELEASE_TAG" "$RUNNER_TEMP/release"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: headroom-${{ matrix.os }}

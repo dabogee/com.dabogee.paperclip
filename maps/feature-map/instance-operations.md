@@ -31,6 +31,9 @@ This fork also offers platform-specific GitHub Release archives and the
 server-only `PAPERCLIP_CODEX_SUBSCRIPTION_PROXY_URL` setting. Follow
 [Headroom setup](../../doc/HEADROOM-FORK.md) for installation and local Codex
 subscription routing; these archives do not use the npm update channel.
+Build a local archive with `pnpm build:fork headroom-vVERSION OUTPUT_DIRECTORY`;
+the same command prepares UI/skills and packages releases in CI. It assumes
+upstream validation and does not run test suites or a separate typecheck.
 
 ### `settings-backup`
 
