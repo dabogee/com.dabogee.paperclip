@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { managedInstallChecks } from "../checks/managed-install-check.js";
 import {
   MANAGED_STORE_MARKER,
+  MANAGED_SHIM_MARKER,
   buildNextManifest,
   flipCurrentAtomic,
   resolveInstallStorePaths,
@@ -19,6 +20,44 @@ afterEach(() => {
 });
 
 describe("managed install doctor checks", () => {
+  it("allows a portable fork symlink with a separate project home", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-fork-doctor-"));
+    try {
+      const paths = resolveInstallStorePaths({
+        paperclipHome: path.join(root, "project", ".paperclip"),
+        homeDir: root,
+      });
+      const entrypoint = path.join(root, ".local/lib/paperclip-headroom/app/dist/index.js");
+      fs.mkdirSync(path.dirname(entrypoint), { recursive: true });
+      // The bundled CLI contains the marker string in its own implementation.
+      fs.writeFileSync(entrypoint, `#!/usr/bin/env node\nconst marker = ${JSON.stringify(MANAGED_SHIM_MARKER)};\n`);
+      fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true });
+      fs.symlinkSync(entrypoint, paths.shimPath);
+      fs.mkdirSync(paths.cliRoot, { recursive: true });
+      fs.writeFileSync(path.join(paths.cliRoot, "update-check.json"), "{}\n");
+
+      expect(managedInstallChecks(paths)).toEqual([
+        expect.objectContaining({ name: "Managed install", status: "pass" }),
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still rejects a managed shim whose manifest is missing", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-shim-doctor-"));
+    try {
+      const paths = resolveInstallStorePaths({ paperclipHome: path.join(root, ".paperclip"), homeDir: root });
+      writeManagedShim(paths);
+
+      expect(managedInstallChecks(paths)).toEqual([
+        expect.objectContaining({ name: "Managed install manifest", status: "fail" }),
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes for a consistent store, manifest, current link, shim, and PATH", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-install-doctor-"));
     const paths = resolveInstallStorePaths({

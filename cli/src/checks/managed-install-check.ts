@@ -22,9 +22,14 @@ function hasManagedArtifacts(paths: InstallStorePaths): boolean {
     paths.manifestPath,
     paths.markerPath,
     paths.currentPath,
-    paths.shimPath,
   ].some((entry) => fs.existsSync(entry));
   if (persistentArtifacts) return true;
+  try {
+    // Portable installs also use this command path; only the shim header identifies a managed install.
+    if (fs.readFileSync(paths.shimPath, "utf8").split("\n", 2)[1] === `# ${MANAGED_SHIM_MARKER}`) return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return true;
+  }
   try {
     return fs.readdirSync(paths.installsRoot).length > 0;
   } catch (error) {
@@ -52,7 +57,7 @@ export function managedInstallChecks(
       {
         name: "Managed install",
         status: "pass",
-        message: "Not present (optional for npx, global npm, and source-checkout usage)",
+        message: "Not present (optional for portable, npx, global npm, and source-checkout usage)",
       },
     ];
   }

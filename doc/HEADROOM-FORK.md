@@ -31,6 +31,12 @@ starting this one. Run the installed `paperclipai` command, not `npx paperclipai
 (which can select the unpatched npm package). The CLI version remains upstream's;
 the archive name and bundled `release.json` identify the fork build.
 
+Portable installations do not need a managed-install `install.json`. A project
+may set its own `PAPERCLIP_HOME`; the command symlink alone does not make that
+project a managed installation. Install newer fork archives with their bundled
+`install.sh`, rather than `paperclipai install` or `paperclipai update`, which
+use upstream's managed distribution channels.
+
 ## Configure the trusted proxy
 
 Start Headroom separately. For a local proxy listening on port 8787, set this

@@ -34,6 +34,9 @@ subscription routing; these archives do not use the npm update channel.
 Build a local archive with `pnpm build:fork headroom-vVERSION OUTPUT_DIRECTORY`;
 the same command prepares UI/skills and packages releases in CI. It assumes
 upstream validation and does not run test suites or a separate typecheck.
+Portable fork commands also support a project-specific `PAPERCLIP_HOME` without
+a managed-install manifest; doctor recognizes the managed launcher by its header,
+not by the command path alone. Managed store artifacts still require a manifest.
 
 ### `settings-backup`
 
